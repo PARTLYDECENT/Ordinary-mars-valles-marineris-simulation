@@ -52,6 +52,13 @@ let gameState = {
         improvedLifeSupport: false,
         batteryExpansion: false
     },
+    // New state for rover animation
+    roverMission: {
+        active: false,
+        startTime: 0,
+        duration: 12000, // Mission takes 12 seconds
+        path: [],
+    }
 };
 
 // --- INITIALIZATION ---
@@ -171,7 +178,8 @@ function setupModel(model, name, x, z, yOffset = 0) {
 
 function loadGLBModel(name, definition, material) {
     const [x, z] = definition.pos;
-    loader.load(`struct${definition.id}.glb`,
+    // Ensure you have a 'models' folder with structX.glb files
+    loader.load(`models/struct${definition.id}.glb`,
         (gltf) => setupModel(gltf.scene, name, x, z),
         undefined,
         () => {
@@ -227,6 +235,7 @@ window.buildSolarPanel = function() {
         updateAllUI();
         if (gameState.solarPanelCount >= MISSION_TARGET_PANELS) {
             log("MISSION COMPLETE: Power grid secured! VICTORY.", "success");
+            // Make sure you have a win22.html file or change this redirect
             setTimeout(() => window.location.href = 'win22.html', 2000);
         }
     } else { log("Insufficient resources for solar panel.", "critical"); }
@@ -272,22 +281,77 @@ window.toggleStorm = () => {
     log(gameState.isStorm ? "Dust storm incoming!" : "Weather clearing.", gameState.isStorm ? "warning" : "success");
 };
 
+// --- ROVER DEPLOYMENT & ANIMATION ---
 window.deployRover = function() {
     if (gameState.roverDeployed) { log("Rover is already on a mission.", "warning"); return; }
     if (gameState.batteryCharge < POWER_CONSUMPTION.rover_deploy) { log("Insufficient power for rover deployment.", "critical"); return; }
+
     gameState.roverDeployed = true;
     gameState.batteryCharge -= POWER_CONSUMPTION.rover_deploy;
     log("Rover deployed for geological survey.", "info");
-    setTimeout(() => {
+
+    const roverObject = objects.structures.rover;
+    if (!roverObject) {
+        log("CRITICAL ERROR: Rover object not found in scene!", "critical");
+        gameState.roverDeployed = false; // Reset state
+        return;
+    }
+
+    const startPosition = roverObject.position.clone();
+    // Define a more interesting, multi-point path
+    const p1 = new THREE.Vector3(startPosition.x + 60, getSurfaceHeight(startPosition.x + 60, startPosition.z + 40), startPosition.z + 40);
+    const p2 = new THREE.Vector3(p1.x - 50, getSurfaceHeight(p1.x - 50, p1.z + 70), p1.z + 70);
+    const p3 = new THREE.Vector3(p2.x - 80, getSurfaceHeight(p2.x - 80, p2.z - 30), p2.z - 30);
+
+    gameState.roverMission.path = [startPosition, p1, p2, p3, p1, startPosition];
+    gameState.roverMission.active = true;
+    gameState.roverMission.startTime = clock.getElapsedTime();
+
+    // Disable the button while the rover is out
+    document.querySelector('button[onclick="deployRover()"]').disabled = true;
+};
+
+function updateRoverMission() {
+    const mission = gameState.roverMission;
+    const elapsedTime = (clock.getElapsedTime() - mission.startTime) * 1000;
+    const missionProgress = Math.min(elapsedTime / mission.duration, 1);
+
+    const roverObject = objects.structures.rover;
+    if (!roverObject) return;
+
+    const path = mission.path;
+    const segmentCount = path.length - 1;
+    const segmentProgress = missionProgress * segmentCount;
+    const currentSegmentIndex = Math.floor(segmentProgress);
+    const segmentLerp = segmentProgress - currentSegmentIndex;
+
+    if (currentSegmentIndex < segmentCount) {
+        const start = path[currentSegmentIndex];
+        const end = path[currentSegmentIndex + 1];
+        roverObject.position.lerpVectors(start, end, segmentLerp);
+
+        // Make the rover look where it's going, preventing it from looking at its current position
+        if (end.distanceTo(roverObject.position) > 0.1) {
+             roverObject.lookAt(end);
+        }
+    }
+
+    if (missionProgress >= 1) {
+        mission.active = false;
+        gameState.roverDeployed = false;
+
         const foundOre = Math.floor(Math.random() * 20) + 10;
         const foundRegolith = Math.floor(Math.random() * 30) + 15;
         gameState.ironOre += foundOre;
         gameState.regolith += foundRegolith;
         log(`Rover returned: found ${foundOre}kg Ore and ${foundRegolith}kg Regolith.`, "success");
-        gameState.roverDeployed = false;
+
+        // Re-enable the button
+        document.querySelector('button[onclick="deployRover()"]').disabled = false;
         updateAllUI();
-    }, 8000);
-};
+    }
+}
+
 
 window.attemptUpgrade = function(type) {
     const costs = {
@@ -311,12 +375,22 @@ function animate() {
     requestAnimationFrame(animate);
     const deltaTime = clock.getDelta();
     gameState.timeOfDay = (gameState.timeOfDay + deltaTime / SOL_DURATION_SECONDS) % 1;
+
     updateLighting();
     updateProcesses(deltaTime);
-    if (solTimer > 1) { updatePower(); solTimer = 0; }
+
+    if (gameState.roverMission.active) {
+        updateRoverMission();
+    }
+
+    if (solTimer > 1) {
+        updatePower();
+        solTimer = 0;
+    }
     solTimer += deltaTime;
     objects.dust.material.opacity = gameState.isStorm ? 0.8 : 0.4;
     if(gameState.isStorm) objects.dust.rotation.y += deltaTime * 0.1;
+
     controls.update();
     renderer.render(scene, camera);
 }
