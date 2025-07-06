@@ -24,6 +24,17 @@ const STRUCTURE_DEFS = {
     rover:          { id: 6, pos: [15, -10], fallback: new THREE.BoxGeometry(4, 2, 6) },
 };
 
+// --- ✨ NEW: GOOGLE DRIVE FILE IDS ---
+const modelFileIds = {
+    habitat_module: '14YJSWPnmx97XbHPdXFAfFBPnWSTon7LC',
+    arc_furnace: '1i4RyEv_1Dln27T3h2ovJ9sJjq5XXziBd',
+    refinery: '1kROuLwxscScXDXSB1E7yziO0kR-ZkmHd',
+    fabricator: '1Yb4zChRUrbLKA0aF5dtCntkHVsSC_IIQ',
+    mining_rig: '1Yw9ohLNwzuKsPiR3plQB29W88w-GgeSq',
+    rover: '1ghDSscIbYmjqcoDYqRcxFoJK5DVZt336'
+};
+
+
 // --- SCENE & STATE ---
 let scene, camera, renderer, controls, clock, loader;
 let lightingSystem, solTimer = 0;
@@ -176,17 +187,29 @@ function setupModel(model, name, x, z, yOffset = 0) {
     scene.add(model);
 }
 
+// --- ✨ UPDATED FUNCTION ---
 function loadGLBModel(name, definition, material) {
     const [x, z] = definition.pos;
-    // Ensure you have a 'models' folder with structX.glb files
-    loader.load(`models/struct${definition.id}.glb`,
+    const fileId = modelFileIds[name];
+
+    const fallback = () => {
+        log(`Fallback: creating procedural model for ${name}.`, 'warning');
+        const fallbackMesh = new THREE.Mesh(definition.fallback, material);
+        setupModel(fallbackMesh, name, x, z, definition.fallback.parameters.height / 2 || 0);
+    };
+
+    if (!fileId) {
+        console.error(`No Google Drive File ID found for model: ${name}`);
+        fallback();
+        return;
+    }
+
+    const modelUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+
+    loader.load(modelUrl,
         (gltf) => setupModel(gltf.scene, name, x, z),
         undefined,
-        () => {
-            log(`Fallback: creating procedural model for ${name}.`, 'warning');
-            const fallbackMesh = new THREE.Mesh(definition.fallback, material);
-            setupModel(fallbackMesh, name, x, z, definition.fallback.parameters.height / 2 || 0);
-        }
+        fallback
     );
 }
 
