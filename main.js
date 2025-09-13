@@ -5,7 +5,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 // --- CORE CONSTANTS & DEFINITIONS ---
 const SOL_DURATION_SECONDS = 60;
 const MISSION_TARGET_PANELS = 20;
-const CANYON_DEPTH = -40;
+const CANYON_DEPTH = -400;
 const POWER_CONSUMPTION = {
     habitat_base: 50,
     electrolysis: 150,
@@ -21,22 +21,11 @@ const STRUCTURE_DEFS = {
     refinery:       { id: 3, pos: [20, 25], fallback: new THREE.CylinderGeometry(5, 6, 10, 12) },
     fabricator:     { id: 4, pos: [-15, -25], fallback: new THREE.BoxGeometry(6, 4, 8) },
     mining_rig:     { id: 5, pos: [30, -20], fallback: new THREE.CylinderGeometry(4, 5, 8, 8) },
-    rover:          { id: 6, pos: [15, -10], fallback: new THREE.BoxGeometry(4, 2, 6) },
+    rover:          { id: 6, pos: [15, -10], model: 'rover.glb', fallback: new THREE.BoxGeometry(4, 2, 6) },
 };
-
-// --- ✨ NEW: GOOGLE DRIVE FILE IDS ---
-const modelFileIds = {
-    habitat_module: '14YJSWPnmx97XbHPdXFAfFBPnWSTon7LC',
-    arc_furnace: '1i4RyEv_1Dln27T3h2ovJ9sJjq5XXziBd',
-    refinery: '1kROuLwxscScXDXSB1E7yziO0kR-ZkmHd',
-    fabricator: '1Yb4zChRUrbLKA0aF5dtCntkHVsSC_IIQ',
-    mining_rig: '1Yw9ohLNwzuKsPiR3plQB29W88w-GgeSq',
-    rover: '1ghDSscIbYmjqcoDYqRcxFoJK5DVZt336'
-};
-
 
 // --- SCENE & STATE ---
-let scene, camera, renderer, controls, clock, loader;
+let scene, camera, renderer, controls, clock, loader, windSound, listener;
 let lightingSystem, solTimer = 0;
 let objects = { structures: {}, terrain: null, dust: null };
 const raycaster = new THREE.Raycaster();
@@ -81,6 +70,16 @@ function init() {
     camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 2000);
     camera.position.set(0, 15, 130);
 
+    // Audio
+    listener = new THREE.AudioListener();
+    camera.add(listener);
+    windSound = new THREE.Audio(listener);
+    windSound.onEnded = () => {
+        if (isWindPlaying) {
+            playRandomWindSound();
+        }
+    };
+
     renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('canvas'), antialias: true });
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -101,6 +100,7 @@ function init() {
     setupLighting();
     createTerrain();
     createInitialStructures();
+    createRandomLandsat();
     createAtmosphere();
 
     renderer.domElement.addEventListener('mousemove', onMouseMove);
@@ -130,7 +130,7 @@ function setupLighting() {
 
 function createTerrain() {
     const size = 800, segments = 250;
-    const canyonFloorWidth = 100, canyonTopWidth = 250;
+    const canyonFloorWidth = 300, canyonTopWidth = 750;
     const wallTransition = (canyonTopWidth - canyonFloorWidth) / 2;
 
     const geometry = new THREE.PlaneGeometry(size, size, segments, segments);
@@ -190,21 +190,14 @@ function setupModel(model, name, x, z, yOffset = 0) {
 // --- ✨ UPDATED FUNCTION ---
 function loadGLBModel(name, definition, material) {
     const [x, z] = definition.pos;
-    const fileId = modelFileIds[name];
+    const modelName = definition.model || `building${definition.id}.glb`;
+    const modelUrl = `assets/models/${modelName}`;
 
     const fallback = () => {
         log(`Fallback: creating procedural model for ${name}.`, 'warning');
         const fallbackMesh = new THREE.Mesh(definition.fallback, material);
         setupModel(fallbackMesh, name, x, z, definition.fallback.parameters.height / 2 || 0);
     };
-
-    if (!fileId) {
-        console.error(`No Google Drive File ID found for model: ${name}`);
-        fallback();
-        return;
-    }
-
-    const modelUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
 
     loader.load(modelUrl,
         (gltf) => setupModel(gltf.scene, name, x, z),
@@ -221,16 +214,55 @@ function createInitialStructures() {
     for (let i = 0; i < gameState.solarPanelCount; i++) createSolarPanel(i);
 }
 
+function createRandomLandsat() {
+    const modelUrl = 'assets/models/landsat.glb';
+    const x = (Math.random() - 0.5) * 400;
+    const z = (Math.random() - 0.5) * 400;
+
+    loader.load(modelUrl,
+        (gltf) => {
+            const y = getSurfaceHeight(x, z);
+            gltf.scene.position.set(x, y, z);
+            gltf.scene.rotation.y = Math.random() * Math.PI * 2;
+            gltf.scene.traverse(child => {
+                if (child.isMesh) {
+                    child.castShadow = true;
+                    child.receiveShadow = true;
+                }
+            });
+            scene.add(gltf.scene);
+        },
+        undefined,
+        () => {
+            log('Could not load landsat.glb', 'critical');
+        }
+    );
+}
+
 function createSolarPanel(index) {
     const panelName = `solar_panel_${index}`;
-    const panelGeom = new THREE.BoxGeometry(12, 0.3, 8);
-    const panelMat = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.1, metalness: 0.9 });
-    const panel = new THREE.Mesh(panelGeom, panelMat);
+    const modelUrl = 'assets/models/solar.glb';
     const angle = (index / 10) * Math.PI;
     const radius = 35 + Math.floor(index / 10) * 15;
     const x = Math.cos(angle) * radius;
     const z = Math.sin(angle) * radius;
-    setupModel(panel, panelName, x, z, 0.15);
+
+    const fallback = () => {
+        log(`Fallback: creating procedural model for solar_panel_${index}.`, 'warning');
+        const panelGeom = new THREE.BoxGeometry(12, 0.3, 8);
+        const panelMat = new THREE.MeshStandardMaterial({ color: 0x1a1a2e, roughness: 0.1, metalness: 0.9 });
+        const panel = new THREE.Mesh(panelGeom, panelMat);
+        setupModel(panel, panelName, x, z, 0.15);
+    };
+
+    loader.load(modelUrl,
+        (gltf) => {
+            const model = gltf.scene;
+            setupModel(model, panelName, x, z, 0.15);
+        },
+        undefined,
+        fallback
+    );
 }
 
 function createAtmosphere() {
@@ -245,6 +277,44 @@ function createAtmosphere() {
     const dustMaterial = new THREE.PointsMaterial({ color: 0xD2B48C, size: 1.0, transparent: true, opacity: 0.4, sizeAttenuation: true, depthWrite: false, blending: THREE.AdditiveBlending });
     objects.dust = new THREE.Points(dustGeometry, dustMaterial);
     scene.add(objects.dust);
+}
+
+const windSounds = ['wind1.mp3', 'wind2.mp3', 'wind3.mp3', 'wind4.mp3'];
+let currentWindSoundIndex = -1;
+let isWindPlaying = false;
+
+function playRandomWindSound() {
+    if (!isWindPlaying) return;
+
+    let nextIndex;
+    do {
+        nextIndex = Math.floor(Math.random() * windSounds.length);
+    } while (nextIndex === currentWindSoundIndex);
+    currentWindSoundIndex = nextIndex;
+
+    const soundFile = `assets/sounds/${windSounds[currentWindSoundIndex]}`;
+    const audioLoader = new THREE.AudioLoader();
+    audioLoader.load(soundFile, function(buffer) {
+        if (!isWindPlaying) return; // Stop if the user has toggled it off while loading
+        windSound.setBuffer(buffer);
+        windSound.setLoop(false); // We are manually looping
+        windSound.setVolume(0.5);
+        windSound.play();
+        log(`Playing wind sound: ${windSounds[currentWindSoundIndex]}`, 'info');
+    });
+}
+
+window.toggleWindSound = function() {
+    isWindPlaying = !isWindPlaying;
+    if (isWindPlaying) {
+        log('Starting wind sounds.', 'info');
+        playRandomWindSound();
+    } else {
+        if (windSound.isPlaying) {
+            windSound.stop();
+        }
+        log('Wind sounds stopped.', 'info');
+    }
 }
 
 window.buildSolarPanel = function() {
